@@ -21,6 +21,19 @@
     
   　const osmBuildings = await Cesium.createOsmBuildingsAsync();
   　viewer.scene.primitives.add(osmBuildings);
+
+// STEP 3 CODE (first point)
+// This is one of the first radar samples collected for our flight.
+const dataPoint = { longitude: -122.38985, latitude: 37.61864, height: -27.32 };
+// Mark this location with a red point.
+const pointEntity = viewer.entities.add({
+  description: `First data point at (${dataPoint.longitude}, ${dataPoint.latitude})`,
+  position: Cesium.Cartesian3.fromDegrees(dataPoint.longitude, dataPoint.latitude, dataPoint.height),
+  point: { pixelSize: 10, color: Cesium.Color.RED }
+});
+// Fly the camera to this point.
+viewer.flyTo(pointEntity);
+    
     
     // Fly the camera to San Francisco at the given longitude, latitude, and height.
     viewer.camera.flyTo({
