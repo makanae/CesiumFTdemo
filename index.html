@@ -16,7 +16,8 @@
 
   <script type="module">
     // ===== Step 1: Cesium ion Access Token（ここを書き換え） =====
-    Cesium.Ion.defaultAccessToken = "YOUR_CESIUM_ION_ACCESS_TOKEN";
+//    Cesium.Ion.defaultAccessToken = "YOUR_CESIUM_ION_ACCESS_TOKEN";
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1ZTNiNjZjZC0yNTg0LTRhYzAtYTk2MC0xNTM2NGYwYmI4MjciLCJpZCI6MzY0NzAsImlhdCI6MTYwMzUzOTY2NH0.gjLjQTcZdUR4xOGiKSjovZrWRR7Bm72x3SCaIphtZIk";
 
     // ===== Step 2: Viewer + Terrain + OSM Buildings =====
     const viewer = new Cesium.Viewer("cesiumContainer", {
@@ -65,7 +66,8 @@
 
     // ===== Step 6/7: 飛行機モデル（Cesium ion Asset） =====
     // ここをあなたの Asset ID に置き換え
-    const airplaneAssetId = 0;
+    //const airplaneAssetId = 0;
+    const airplaneAssetId = 171611;
 
     async function loadAirplane() {
       if (!airplaneAssetId || airplaneAssetId === 0) {
