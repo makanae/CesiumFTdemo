@@ -3,92 +3,139 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-
-  <!-- CesiumJS (CDN) : 公式チュートリアルと同じ読み込み -->
   <script src="https://cesium.com/downloads/cesiumjs/releases/1.137/Build/Cesium/Cesium.js"></script>
   <link href="https://cesium.com/downloads/cesiumjs/releases/1.137/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
-  <link href="style.css" rel="stylesheet">
-
-  <title>Cesium Flight Tracker (GitHub Pages / CDN)</title>
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; overflow:hidden; }
+    #hud{position:absolute;left:10px;top:10px;z-index:10;background:rgba(0,0,0,.6);color:#fff;
+         padding:8px 10px;border-radius:8px;font:12px/1.4 system-ui}
+    #hud code{color:#b7ffb7}
+  </style>
+  <title>Cesium Flight Tracker (Debug)</title>
 </head>
 <body>
   <div id="cesiumContainer"></div>
+  <div id="hud">loading…</div>
 
   <script type="module">
-    // ===== Step 1: Cesium ion Access Token（ここを書き換え） =====
-    Cesium.Ion.defaultAccessToken = "YOUR_CESIUM_ION_ACCESS_TOKEN";
+    const hud = document.getElementById("hud");
+    const say = (s) => { hud.innerHTML = s; console.log(s.replace(/<br\/>/g,"\n")); };
 
-    // ===== Step 2: Viewer + Terrain + OSM Buildings =====
+    // ★ここを設定
+    Cesium.Ion.defaultAccessToken = "YOUR_CESIUM_ION_ACCESS_TOKEN";
+    const airplaneAssetId = 0; // 0でもOK（その場合は緑点で表示）
+    const DATA = "./flightData.json";
+
+    say(`token: <code>${Cesium.Ion.defaultAccessToken ? "set" : "missing"}</code><br/>data: <code>${DATA}</code>`);
+
     const viewer = new Cesium.Viewer("cesiumContainer", {
       terrain: Cesium.Terrain.fromWorldTerrain(),
     });
 
-    const osmBuildings = await Cesium.createOsmBuildingsAsync();
-    viewer.scene.primitives.add(osmBuildings);
+    // buildingsは失敗しても先に進む
+    try {
+      const b = await Cesium.createOsmBuildingsAsync();
+      viewer.scene.primitives.add(b);
+    } catch (e) {
+      console.warn("OSM buildings failed:", e);
+    }
 
-    // ===== Step 4/5: flightData を外部JSON（flightData.json）から読み込み =====
-    const flightData = await (await fetch("./flightData.json")).json();
+    // 1) JSON取得
+    let raw;
+    try {
+      const res = await fetch(DATA, { cache: "no-store" });
+      if (!res.ok) throw new Error(`fetch ${DATA} HTTP ${res.status}`);
+      raw = await res.json();
+    } catch (e) {
+      say(`<b>ERROR</b><br/>flightData.json が読めません<br/><code>${String(e)}</code>`);
+      throw e;
+    }
 
-    // ===== Step 5: 時間設定（公式と同じ仮定：30秒刻み） =====
-    const timeStepInSeconds = 30;
-    const totalSeconds = timeStepInSeconds * (flightData.length - 1);
+    // 2) 形式チェック（配列 or {flightData:[…]} どちらでもOK）
+    const arr = Array.isArray(raw) ? raw : (raw.flightData ?? raw.data ?? raw.samples);
+    if (!Array.isArray(arr) || arr.length < 2) {
+      say(`<b>ERROR</b><br/>flightData が配列(2点以上)ではありません<br/><code>${JSON.stringify(raw).slice(0,200)}...</code>`);
+      throw new Error("flightData is not a valid array");
+    }
 
-    // 公式と同じ開始時刻（UTC）
+    // 3) キー吸収（longitude/latitude/height 以外でも拾う）
+    const norm = (p) => {
+      const lon = Number(p.longitude ?? p.lon ?? p.lng ?? p.long);
+      const lat = Number(p.latitude ?? p.lat);
+      const h   = Number(p.height ?? p.altitude ?? p.alt ?? 0);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat) || !Number.isFinite(h)) return null;
+      return { lon, lat, h };
+    };
+    const flightData = arr.map(norm).filter(Boolean);
+
+    if (flightData.length < 2) {
+      say(`<b>ERROR</b><br/>lon/lat/height が読める点が2つ未満です（キー名が違うかも）`);
+      throw new Error("Not enough valid samples");
+    }
+
+    say(`loaded: <code>${flightData.length}</code> points<br/>first: <code>${flightData[0].lon.toFixed(5)}, ${flightData[0].lat.toFixed(5)}, h=${flightData[0].h}</code>`);
+
+    // 4) 時間設定（公式に合わせるなら start固定でもOK）
+    const timeStep = 30;
+    const totalSeconds = timeStep * (flightData.length - 1);
     const start = Cesium.JulianDate.fromIso8601("2020-03-09T23:10:00Z");
     const stop  = Cesium.JulianDate.addSeconds(start, totalSeconds, new Cesium.JulianDate());
 
-    viewer.clock.startTime = start.clone();
-    viewer.clock.stopTime = stop.clone();
+    viewer.clock.startTime   = start.clone();
+    viewer.clock.stopTime    = stop.clone();
     viewer.clock.currentTime = start.clone();
+    viewer.clock.multiplier  = 50;
+    viewer.clock.shouldAnimate = true;
     viewer.timeline.zoomTo(start, stop);
 
-    viewer.clock.multiplier = 50;   // 50倍速（公式）
-    viewer.clock.shouldAnimate = true;
-
-    // ===== Step 5: 時系列位置（SampledPositionProperty） =====
+    // 5) 位置プロパティ
     const positionProperty = new Cesium.SampledPositionProperty();
-
-    for (let i = 0; i < flightData.length; i++) {
+    for (let i=0; i<flightData.length; i++){
+      const t = Cesium.JulianDate.addSeconds(start, i*timeStep, new Cesium.JulianDate());
       const p = flightData[i];
-      const time = Cesium.JulianDate.addSeconds(start, i * timeStepInSeconds, new Cesium.JulianDate());
-      const pos  = Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.height);
+      const pos = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.h);
+      positionProperty.addSample(t, pos);
 
-      positionProperty.addSample(time, pos);
-
-      // 公式と同様：全ポイントを赤点で可視化
+      // 赤点（これが出ないなら data/座標/描画の問題）
       viewer.entities.add({
-        description: `Location: (${p.longitude}, ${p.latitude}, ${p.height})`,
         position: pos,
-        point: { pixelSize: 10, color: Cesium.Color.RED }
+        point: { pixelSize: 6, color: Cesium.Color.RED },
       });
     }
 
-    // ===== Step 6/7: 飛行機モデル（Cesium ion Asset） =====
-    // ここをあなたの Asset ID に置き換え
-    const airplaneAssetId = 0;
+    // 6) 軌跡を持つ“本体”エンティティ（ここが軌跡の正体）
+    const base = {
+      availability: new Cesium.TimeIntervalCollection([ new Cesium.TimeInterval({ start, stop }) ]),
+      position: positionProperty,
+      orientation: new Cesium.VelocityOrientationProperty(positionProperty),
+      path: {
+        width: 3,
+        material: Cesium.Color.CYAN,
+        leadTime: 0,
+        trailTime: totalSeconds,
+        resolution: 1
+      },
+    };
 
-    async function loadAirplane() {
-      if (!airplaneAssetId || airplaneAssetId === 0) {
-        console.warn("airplaneAssetId が 0 のままです。Cesium ion の Asset ID を設定してください。");
-        return;
-      }
-
-      const airplaneUri = await Cesium.IonResource.fromAssetId(airplaneAssetId);
-
-      const airplane = viewer.entities.add({
-        availability: new Cesium.TimeIntervalCollection([
-          new Cesium.TimeInterval({ start, stop })
-        ]),
-        position: positionProperty,
-        model: { uri: airplaneUri },
-        orientation: new Cesium.VelocityOrientationProperty(positionProperty),
-        path: new Cesium.PathGraphics({ width: 3 })
-      });
-
-      viewer.trackedEntity = airplane;
+    if (airplaneAssetId && airplaneAssetId > 0) {
+      const uri = await Cesium.IonResource.fromAssetId(airplaneAssetId);
+      base.model = { uri, minimumPixelSize: 64, maximumScale: 200 };
+    } else {
+      // モデル無しでも追跡できるように、緑点を表示
+      base.point = { pixelSize: 10, color: Cesium.Color.LIME };
     }
 
-    loadAirplane();
+    const entity = viewer.entities.add(base);
+    viewer.trackedEntity = entity;
+
+    // 最初に見える位置へ
+    const first = flightData[0];
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(first.lon, first.lat, 15000),
+      duration: 1.0
+    });
+
+    say(`OK<br/>red points: <code>on</code><br/>path: <code>on</code><br/>model: <code>${airplaneAssetId>0 ? "ion asset" : "none"}</code>`);
   </script>
 </body>
 </html>
