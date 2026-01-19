@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cesium Flight Tracker (CDN / 完成版)</title>
+
+  <!-- CesiumJS（CDN） -->
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.115/Build/Cesium/Cesium.js"></script>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.115/Build/Cesium/Widgets/widgets.css" />
+
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; overflow:hidden; }
+    .panel {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      background: rgba(20,20,20,0.75);
+      color: #fff;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+      max-width: 340px;
+    }
+    .panel h1 { font-size: 14px; margin: 0 0 6px; }
+    .row { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+    button, input[type="range"] {
+      font: inherit;
+    }
+    button {
+      padding: 6px 10px;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .btn { background:#2b6cb0; color:#fff; }
+    .btn2 { background:#4a5568; color:#fff; }
+    .badge { opacity:.9; font-size:12px; }
+    a { color:#9ae6b4; }
+    code { background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 6px; }
+  </style>
+</head>
+
+<body>
+  <div id="cesiumContainer"></div>
+
+  <div class="panel">
+    <h1>✈️ Flight Tracker（デモ / 埋め込み飛行データ）</h1>
+    <div class="badge">
+      ・データはこのHTML内に埋め込み（通信なし）<br/>
+      ・タイムライン/アニメーションで再生できます
+    </div>
+
+    <div class="row">
+      <button id="btnPlay" class="btn">▶ 再生</button>
+      <button id="btnPause" class="btn2">⏸ 停止</button>
+      <button id="btnReset" class="btn2">↩ 最初へ</button>
+      <button id="btnFollow" class="btn2">🎥 追尾ON</button>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <label for="speed">速度：</label>
+      <input id="speed" type="range" min="1" max="200" value="30" />
+      <span id="speedVal">30×</span>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <span>ヒント：</span>
+      <span>トークンは <code>Cesium.Ion.defaultAccessToken</code> に貼り付け</span>
+    </div>
+  </div>
+
+  <script>
+    // =========================
+    // 1) ここに自分の Cesium ion トークンを貼る
+    // =========================
+    Cesium.Ion.defaultAccessToken = "ここにトークンを貼る";
+
+    // =========================
+    // 2) Viewer を作る
+    // =========================
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
+      timeline: true,
+      animation: true,
+      shouldAnimate: true
+    });
+
+    // 3D建物（お好み）
+    viewer.scene.primitives.add(Cesium.createOsmBuildings());
+
+    // =========================
+    // 3) 飛行データ（時系列）を “埋め込み” で用意
+    //    例：仙台付近 → 東京付近へ（約10分分のデモ）
+    // =========================
+    // 時刻（UTC）を使う：ISO文字列で書くのが分かりやすい
+    const t0 = "2026-01-19T00:00:00Z"; // デモ開始時刻
+    const samples = [
+      // time, lon, lat, alt(m)
+      ["2026-01-19T00:00:00Z", 141.154, 38.268, 1200],
+      ["2026-01-19T00:01:00Z", 141.050, 38.150, 2200],
+      ["2026-01-19T00:02:00Z", 140.930, 38.000, 3800],
+      ["2026-01-19T00:03:00Z", 140.780, 37.820, 5200],
+      ["2026-01-19T00:04:00Z", 140.580, 37.620, 6800],
+      ["2026-01-19T00:05:00Z", 140.330, 37.360, 8200],
+      ["2026-01-19T00:06:00Z", 140.060, 37.070, 9100],
+      ["2026-01-19T00:07:00Z", 139.880, 36.780, 9800],
+      ["2026-01-19T00:08:00Z", 139.800, 36.420, 9800],
+      ["2026-01-19T00:09:00Z", 139.770, 36.050, 9000],
+      ["2026-01-19T00:10:00Z", 139.770, 35.681, 3000]
+    ];
+
+    // =========================
+    // 4) SampledPositionProperty に変換（Flight Trackerの基本）
+    // =========================
+    const position = new Cesium.SampledPositionProperty();
+    for (const s of samples) {
+      const time = Cesium.JulianDate.fromIso8601(s[0]);
+      const p = Cesium.Cartesian3.fromDegrees(s[1], s[2], s[3]);
+      position.addSample(time, p);
+    }
+
+    // 補間（滑らかに動く）
+    position.setInterpolationOptions({
+      interpolationDegree: 2,
+      interpolationAlgorithm: Cesium.LagrangePolynomialApproximation
+    });
+
+    // =========================
+    // 5) 表示する「飛行機（点＋アイコン）」と「軌跡（Path）」を作る
+    // =========================
+    // シンプルな飛行機SVG（data URL）…外部ファイル不要
+    const airplaneSvg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+        <path fill="white" d="M62 34l-20 6-10 22-4-1 6-22-14-4-8 8-4-1 6-12-6-12 4-1 8 8 14-4-6-22 4-1 10 22 20 6z"/>
+      </svg>
+    `;
+    const airplaneUrl = "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(airplaneSvg);
+
+    const start = Cesium.JulianDate.fromIso8601(samples[0][0]);
+    const stop  = Cesium.JulianDate.fromIso8601(samples[samples.length - 1][0]);
+
+    // 重要：クロック設定（この時間帯だけ再生）
+    viewer.clock.startTime = start.clone();
+    viewer.clock.stopTime  = stop.clone();
+    viewer.clock.currentTime = start.clone();
+    viewer.clock.clockRange = Cesium.ClockRange.LOOP_STOP; // 最後まで行ったら止める
+    viewer.clock.multiplier = 30; // 再生速度（UIで変える）
+
+    // タイムラインの表示範囲も合わせる
+    viewer.timeline.zoomTo(start, stop);
+
+    // 飛行機エンティティ
+    const plane = viewer.entities.add({
+      name: "Demo Flight",
+      availability: new Cesium.TimeIntervalCollection([
+        new Cesium.TimeInterval({ start, stop })
+      ]),
+      position,
+      orientation: new Cesium.VelocityOrientationProperty(position), // 進行方向に向ける
+      billboard: {
+        image: airplaneUrl,
+        scale: 0.7,
+        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        alignedAxis: Cesium.Cartesian3.ZERO
+      },
+      path: {
+        show: true,
+        width: 3,
+        leadTime: 0,          // 先行は描かない
+        trailTime: 600,       // 過去10分分を表示（秒）
+        resolution: 5
+      },
+      label: {
+        text: "Demo Flight",
+        font: "14px sans-serif",
+        pixelOffset: new Cesium.Cartesian2(0, -40),
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 2,
+        showBackground: true,
+        backgroundColor: new Cesium.Color(0, 0, 0, 0.5)
+      }
+    });
+
+    // 最初に飛行機が見えるように
+    viewer.trackedEntity = plane; // 追尾ONで開始
+    let following = true;
+
+    // =========================
+    // 6) UI（再生/停止/最初へ/追尾、速度）
+    // =========================
+    const btnPlay = document.getElementById("btnPlay");
+    const btnPause = document.getElementById("btnPause");
+    const btnReset = document.getElementById("btnReset");
+    const btnFollow = document.getElementById("btnFollow");
+    const speed = document.getElementById("speed");
+    const speedVal = document.getElementById("speedVal");
+
+    btnPlay.onclick = () => { viewer.clock.shouldAnimate = true; };
+    btnPause.onclick = () => { viewer.clock.shouldAnimate = false; };
+
+    btnReset.onclick = () => {
+      viewer.clock.currentTime = start.clone();
+      viewer.clock.shouldAnimate = false;
+      if (following) viewer.trackedEntity = plane;
+    };
+
+    btnFollow.onclick = () => {
+      following = !following;
+      btnFollow.textContent = following ? "🎥 追尾ON" : "🎥 追尾OFF";
+      viewer.trackedEntity = following ? plane : undefined;
+    };
+
+    speed.oninput = () => {
+      const v = Number(speed.value);
+      viewer.clock.multiplier = v;
+      speedVal.textContent = `${v}×`;
+    };
+    // 初期値表示
+    speedVal.textContent = `${viewer.clock.multiplier}×`;
+    speed.value = String(viewer.clock.multiplier);
+
+    // =========================
+    // 7) ちょい便利：クリックで情報表示
+    // =========================
+    plane.description = `
+      <h3>Demo Flight</h3>
+      <p>この飛行は <b>HTML内の時系列データ</b>で動いています。</p>
+      <p>次は、あなたの実データ（CSV/CZML/JSON）に差し替え可能です。</p>
+    `;
+  </script>
+</body>
+</html>
